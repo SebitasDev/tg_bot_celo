@@ -134,6 +134,53 @@ async function getRanking() {
     }
 }
 
+// Función para enviar mensaje temporal que solo el usuario vea
+async function sendTemporaryMessage(ctx, message, deleteAfter = 5000) {
+    try {
+        // Enviar mensaje respondiendo al comando original
+        const sentMessage = await ctx.reply(
+            message,
+            {
+                reply_to_message_id: ctx.message.message_id,
+                parse_mode: 'Markdown'
+            }
+        );
+
+        // Eliminar tanto el comando como la respuesta después del tiempo especificado
+        setTimeout(async () => {
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, sentMessage.message_id);
+                await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id);
+            } catch (error) {
+                console.log('No se pudieron eliminar los mensajes (normal si son antiguos o el bot no es admin)');
+            }
+        }, deleteAfter);
+
+        return true;
+    } catch (error) {
+        console.error('Error enviando mensaje temporal:', error);
+        return false;
+    }
+}
+
+async function isUserAdmin(ctx, userId) {
+    try {
+        // En chats privados, cualquiera puede usar los comandos
+        if (ctx.chat.type === 'private') {
+            return true;
+        }
+
+        // Obtener información del miembro del chat
+        const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, userId);
+
+        // Verificar si es administrador o creador
+        return chatMember.status === 'administrator' || chatMember.status === 'creator';
+    } catch (error) {
+        console.error('❌ Error verificando permisos de admin:', error);
+        return false;
+    }
+}
+
 // Función para obtener las invitaciones de un usuario específico
 async function getUserInvitations(userId) {
     try {
@@ -185,52 +232,104 @@ bot.use((ctx, next) => {
 });
 
 // Comando /start
-bot.command('start', (ctx) => {
+bot.command('start', async (ctx) => {
     console.log('🚀 Procesando comando /start...');
-    const message = `👋 ¡Hola! Soy un bot que registra las invitaciones a grupos.
+
+    const message = `👋 ¡Hola @${ctx.from.username || ctx.from.first_name}! Soy un bot que registra las invitaciones a grupos.
 
 📋 *Comandos disponibles:*
 /start - Este mensaje
 /help - Ayuda y estado
-/ranking - Ver el top 10 de usuarios que más han invitado
+/ranking - Ver el top 10 de usuarios que más han invitado (solo admins)
 /misinvitaciones - Ver tus invitaciones personales
 
 💡 *Cómo funciona:*
-Cuando alguien añade a una persona al grupo, registro la invitación automáticamente.`;
+Cuando alguien añade a una persona al grupo, registro la invitación automáticamente.
 
-    ctx.reply(message, { parse_mode: 'Markdown' })
-        .then(() => console.log('✅ Start enviado'))
-        .catch(err => console.error('❌ Error:', err));
+⏱️ *Este mensaje se eliminará en 5 segundos...*`;
+
+    const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+
+    if (isGroup) {
+        // En grupos, enviar mensaje temporal que se autoelimine
+        await sendTemporaryMessage(ctx, message, 5000);
+    } else {
+        // En chat privado, enviar normalmente (sin eliminar)
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+    }
+
+    console.log('✅ Start procesado');
 });
 
 // Comando /help
-bot.command('help', (ctx) => {
+bot.command('help', async (ctx) => {
     console.log('❓ Comando /help recibido');
-    const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
 
-    let helpMessage = '📋 *Comandos disponibles:*\n\n';
+    const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+    const userId = ctx.from.id;
+    const username = ctx.from.username || ctx.from.first_name;
+
+    let helpMessage = `📋 *Comandos disponibles para @${username}:*\n\n`;
+
+    // Comandos para todos los usuarios
+    helpMessage += '👥 *Para todos los usuarios:*\n';
     helpMessage += '/start - Información del bot\n';
-    helpMessage += '/ranking - Top 10 invitadores\n';
     helpMessage += '/misinvitaciones - Ver tus invitaciones personales\n';
     helpMessage += '/help - Este mensaje\n\n';
 
     if (isGroup) {
-        helpMessage += '✅ *Estoy funcionando en este grupo*\n';
+        // Verificar si el usuario es administrador
+        const isAdmin = await isUserAdmin(ctx, userId);
+
+        if (isAdmin) {
+            helpMessage += '👑 *Para administradores:*\n';
+            helpMessage += '/ranking - Top 10 invitadores (solo admins)\n\n';
+            helpMessage += '✅ *Tienes permisos de administrador*\n';
+        } else {
+            helpMessage += '⛔ *Solo para administradores:*\n';
+            helpMessage += '/ranking - Top 10 invitadores\n\n';
+            helpMessage += '📝 *Nota:* No tienes permisos de administrador\n';
+        }
+
         helpMessage += `📍 Grupo: ${ctx.chat.title}\n`;
-        helpMessage += `🆔 ID: ${ctx.chat.id}`;
+        helpMessage += `🆔 ID: ${ctx.chat.id}\n\n`;
+        helpMessage += `⏱️ *Este mensaje se eliminará en 8 segundos...*`;
+
+        // Enviar mensaje temporal que se autoelimine
+        await sendTemporaryMessage(ctx, helpMessage, 8000);
     } else {
+        helpMessage += '👑 *En chat privado (todos disponibles):*\n';
+        helpMessage += '/ranking - Top 10 invitadores\n\n';
         helpMessage += '💬 *Estás en chat privado*\n';
         helpMessage += 'Añádeme a un grupo para registrar invitaciones';
+
+        // En chat privado, enviar normalmente
+        await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
     }
 
-    ctx.reply(helpMessage, { parse_mode: 'Markdown' })
-        .then(() => console.log('✅ Help enviado'))
-        .catch(err => console.error('❌ Error:', err));
+    console.log(`✅ Help procesado para ${username}`);
 });
 
 // Comando /ranking
 bot.command('ranking', async (ctx) => {
     console.log('📊 Procesando comando /ranking...');
+
+    const userId = ctx.from.id;
+    const username = ctx.from.username || ctx.from.first_name;
+
+    // Verificar si el usuario es administrador
+    const isAdmin = await isUserAdmin(ctx, userId);
+
+    if (!isAdmin) {
+        console.log(`⛔ Usuario ${username} intentó usar /ranking sin permisos de admin`);
+        await ctx.reply(
+            '⛔ *Acceso denegado*\n\n' +
+            'Solo los administradores del grupo pueden ver el ranking completo.\n' +
+            'Usa /misinvitaciones para ver tus propias estadísticas.',
+            { parse_mode: 'Markdown' }
+        );
+        return;
+    }
 
     try {
         const ranking = await getRanking();
@@ -246,8 +345,10 @@ bot.command('ranking', async (ctx) => {
             message += `${medal} @${user.username}: *${user.count}* invitaciones\n`;
         });
 
+        message += '\n👑 *Comando ejecutado por administrador*';
+
         await ctx.reply(message, { parse_mode: 'Markdown' });
-        console.log('✅ Ranking enviado');
+        console.log(`✅ Ranking enviado por admin: ${username}`);
     } catch (error) {
         console.error('❌ Error mostrando ranking:', error);
         ctx.reply('❌ Error al obtener el ranking. Intenta más tarde.');

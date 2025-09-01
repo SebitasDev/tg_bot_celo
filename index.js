@@ -1,15 +1,16 @@
 const { Telegraf } = require('telegraf');
 const mysql = require('mysql2/promise');
 const express = require('express');
+require('dotenv').config();
 
-// Configuración
-const BOT_TOKEN = '8291866498:AAFcJI7V-Cq1AeiB0KmcvdaTWEMWLYzFt6U';
+//Token del bot y configuración de la base de datos
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const DB_CONFIG = {
-    host: 'bc8tvatjrbafgmszkqbk-mysql.services.clever-cloud.com',
-    database: 'bc8tvatjrbafgmszkqbk',
-    user: 'ugzv7txkz1anf9iy',
-    password: 'SYbGXOcsFB7dHMuFhRkF',
-    port: 3306,
+    host: process.env.DB_CONFIG_HOST,
+    database: process.env.DB_CONFIG_DATABASE,
+    user: process.env.DB_CONFIG_USER,
+    password: process.env.DB_CONFIG_PASSWORD,
+    port: parseInt(process.env.DB_CONFIG_PORT) || 3306,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -133,6 +134,42 @@ async function getRanking() {
     }
 }
 
+// Función para obtener las invitaciones de un usuario específico
+async function getUserInvitations(userId) {
+    try {
+        const results = await executeQuery(
+            'SELECT count FROM ranking WHERE user_id = ?',
+            [userId]
+        );
+
+        if (results.length === 0) {
+            return 0;
+        }
+
+        return results[0].count;
+    } catch (error) {
+        console.error('❌ Error obteniendo invitaciones del usuario:', error);
+        return null;
+    }
+}
+
+async function getUserRankingPosition(userId) {
+    try {
+        const results = await executeQuery(
+            `SELECT 
+                COUNT(*) + 1 as position 
+             FROM ranking 
+             WHERE count > (SELECT COALESCE(count, 0) FROM ranking WHERE user_id = ?)`,
+            [userId]
+        );
+
+        return results[0].position;
+    } catch (error) {
+        console.error('❌ Error obteniendo posición en ranking:', error);
+        return null;
+    }
+}
+
 // Middleware para logging
 bot.use((ctx, next) => {
     if (ctx.message?.text?.startsWith('/')) {
@@ -156,7 +193,7 @@ bot.command('start', (ctx) => {
 /start - Este mensaje
 /help - Ayuda y estado
 /ranking - Ver el top 10 de usuarios que más han invitado
-/ping - Verificar que el bot funciona
+/misinvitaciones - Ver tus invitaciones personales
 
 💡 *Cómo funciona:*
 Cuando alguien añade a una persona al grupo, registro la invitación automáticamente.`;
@@ -174,7 +211,7 @@ bot.command('help', (ctx) => {
     let helpMessage = '📋 *Comandos disponibles:*\n\n';
     helpMessage += '/start - Información del bot\n';
     helpMessage += '/ranking - Top 10 invitadores\n';
-    helpMessage += '/ping - Verificar funcionamiento\n';
+    helpMessage += '/misinvitaciones - Ver tus invitaciones personales\n';
     helpMessage += '/help - Este mensaje\n\n';
 
     if (isGroup) {
@@ -188,14 +225,6 @@ bot.command('help', (ctx) => {
 
     ctx.reply(helpMessage, { parse_mode: 'Markdown' })
         .then(() => console.log('✅ Help enviado'))
-        .catch(err => console.error('❌ Error:', err));
-});
-
-// Comando /ping
-bot.command('ping', (ctx) => {
-    console.log('🏓 Ping recibido');
-    ctx.reply('🏓 Pong!')
-        .then(() => console.log('✅ Pong enviado'))
         .catch(err => console.error('❌ Error:', err));
 });
 
@@ -223,6 +252,70 @@ bot.command('ranking', async (ctx) => {
         console.error('❌ Error mostrando ranking:', error);
         ctx.reply('❌ Error al obtener el ranking. Intenta más tarde.');
     }
+});
+
+bot.command('misinvitaciones', async (ctx) => {
+    console.log('📊 Procesando comando /misinvitaciones...');
+
+    const userId = ctx.from.id;
+    const username = ctx.from.username || ctx.from.first_name;
+
+    try {
+        // Obtener el número de invitaciones del usuario
+        const invitationCount = await getUserInvitations(userId);
+
+        if (invitationCount === null) {
+            await ctx.reply('❌ Error al obtener tus invitaciones. Intenta más tarde.');
+            return;
+        }
+
+        if (invitationCount === 0) {
+            await ctx.reply(
+                `👤 @${username}\n` +
+                `📊 *Tus invitaciones:* 0\n` +
+                `🏆 *Posición:* Sin ranking\n\n` +
+                `💡 ¡Invita a más personas para aparecer en el ranking!`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+
+        // Obtener la posición en el ranking
+        const position = await getUserRankingPosition(userId);
+
+        let message = `👤 @${username}\n`;
+        message += `📊 *Tus invitaciones:* ${invitationCount}\n`;
+
+        if (position !== null) {
+            message += `🏆 *Posición en ranking:* #${position}\n\n`;
+
+            // Agregar emoji según la posición
+            if (position === 1) {
+                message += `🥇 ¡Eres el #1 en invitaciones!`;
+            } else if (position === 2) {
+                message += `🥈 ¡Segundo lugar! Muy bien!`;
+            } else if (position === 3) {
+                message += `🥉 ¡Tercer lugar! Excelente!`;
+            } else if (position <= 10) {
+                message += `⭐ ¡Estás en el TOP 10!`;
+            } else {
+                message += `💪 ¡Sigue invitando para subir en el ranking!`;
+            }
+        }
+
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+        console.log(`✅ Invitaciones mostradas para ${username}: ${invitationCount}`);
+
+    } catch (error) {
+        console.error('❌ Error mostrando invitaciones personales:', error);
+        ctx.reply('❌ Error al obtener tus invitaciones. Intenta más tarde.');
+    }
+});
+
+// También puedes agregar un alias más corto
+bot.command('mis', async (ctx) => {
+    // Reutilizar la misma lógica del comando /misinvitaciones
+    return ctx.scene.enter || ctx.telegram.sendMessage(ctx.chat.id, "Usa /misinvitaciones para ver tus invitaciones");
 });
 
 // Manejar nuevos miembros
